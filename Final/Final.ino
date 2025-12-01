@@ -1,7 +1,20 @@
 //Alec Zheng, Isaiah Marzan
 
+#include <LiquidCrystal.h>
+#include <Stepper.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include "DHT.h"
+
 #define RDA 0x80
 #define TBE 0x20  
+
+//TEMP SETUP  
+DHT dht(53, DHT11);
+
+//RTC SETUP
+RTC_DS1307 rtc;
+bool timedisplayed = true;
 
 //BUTTON STUFF
 unsigned char* ddr_e = (unsigned char*) 0x2D;
@@ -24,6 +37,7 @@ volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
 volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
+int level = 0;
 
 //DELAY STUFF
 volatile unsigned char *myTCCR1A = (unsigned char *) 0x80;
@@ -36,12 +50,25 @@ volatile unsigned char *portDDRB = (unsigned char *) 0x24;
 volatile unsigned char *portB =    (unsigned char *) 0x25;
 int freq = 500;
 
+//STEPPER STUFF
+const int stepsPerRevolution = 2038;
+Stepper myStepper = Stepper(stepsPerRevolution, 8, 10, 9, 11);  //TEMP PINS CHANGE LATER
+
+//DISPLAY CHARACTERS
+const int RS = 11, EN = 12, D4 = 52, D5 = 48, D6 = 50, D7 = 46;
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
+
+
 void setup() {
   U0Init(9600);
   adc_init();
+  //LCD STUFF
+  lcd.begin(16, 2); // set up number of columns and rows
+  //BUTTON STUFF
   *ddr_e &= 0xEF;   //set PB4 to INPUT
   *port_e |= 0x10;  //INPUT pull up
   attachInterrupt(digitalPinToInterrupt(2), startButton, FALLING);
+  //LED STUFF
   *ddr_h |= 0x08;   //blue
   *ddr_h |= 0x40;   //Green
   *ddr_h |= 0x20;   //yellow
@@ -50,10 +77,26 @@ void setup() {
   *port_h &= 0xBF;  //red off
   *port_h &= 0xDF;  //yellow off
   *port_h &= 0xEF;  //green off
+  dht.begin();
+  Wire.begin();
+  myStepper.setSpeed(5);
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+  }
+  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
 }
 
 void loop() {
 
+  if(timedisplayed == false){
+    my_delay(1);
+    DateTime now = rtc.now();
+    printTime(now);
+    U0putchar('\n');
+    timedisplayed = true;
+  }
+    
   //state = disabled
   if(state == 0){
     
@@ -61,6 +104,9 @@ void loop() {
     *port_h &= 0xBF;  //green off
     *port_h &= 0xEF;  //red off
     *port_h |= 0x20;  //Yellow light on
+    lcd.clear();
+
+    
     
   }
   //State = idle
@@ -70,7 +116,47 @@ void loop() {
     *port_h &= 0xEF;  //red off
     *port_h &= 0xDF;  //yellow off
     *port_h |= 0x40;  //Green light on
+
+    //get when you first read the sensors
+    unsigned long starttime = millis();
+
+
+    //LCD DISPLAY
+    lcd.display();
+    lcd.setCursor(0, 0); // move cursor to (0, 0)
+    lcd.print("WT:");
+    lcd.setCursor(0, 1); // move cursor to (0, 0)
+    lcd.print("TP:");
+    lcd.setCursor(8, 1);
+    lcd.print("HM:");
+
+    //water level
+    level = adc_read(0);
+    if(level < 20){
+      lcd.setCursor(3, 0); // move cursor to (0, 0)
+      lcd.print("LOW WATER");
+    }
+    else{
+      lcd.setCursor(3, 0); // move cursor to (0, 0)
+      lcd.print(level);
+    }
+    //temp
+    float temp = dht.readTemperature(true);
+    float hum = dht.readHumidity();
+    lcd.setCursor(3, 1);
+    lcd.print(temp);
+    lcd.setCursor(11, 1);
+    lcd.print(hum);
     
+
+    //current time
+    unsigned long currenttime = millis();
+
+    //wait until 1 minute has passed between now and start
+    while((currenttime-starttime) < 60000 && state == 1){
+      currenttime = millis();
+    }
+
   }
   //State = Error
   else if(state == 2){
@@ -79,6 +165,10 @@ void loop() {
     *port_h &= 0xDF;  //yellow off
     *port_h &= 0xBF;  //green off
     *port_h |= 0x10;  //red on
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Error");
     
   }
   //State = Running
@@ -88,6 +178,7 @@ void loop() {
     *port_h &= 0xDF;  //yellow off
     *port_h &= 0xEF;  //red off
     *port_h |= 0x08;  //blue on
+
 
   }
 
@@ -211,23 +302,44 @@ void my_delay(unsigned int freq)
   *myTIFR1 |= 0x01;
 }
 
+void U0putString(const char *s) {
+  while (*s) {
+    U0putchar(*s);
+    s++;
+  }
+}
+
+void printTime(const DateTime& now) {
+    char buf[32];  
+    sprintf(buf, "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
+    U0putString(buf);
+}
+
 void startButton()
 {
   if(state == 0){ //disabled
     my_delay(1);
     state = 1;
+    U0putString("Disabled to Idle: ");
   }
   else if(state == 1){ //idle
     my_delay(1);
     state = 0;
+    U0putString("Idle to Disabled: ");
   }
   else if(state == 2){ //running
     my_delay(1);
     state = 0;
+    U0putString("Running to Idle: ");
   }
   else if(state == 3){ //error
     my_delay(1);
     state = 1;
+    U0putString("Error to Idle: ");
+    
   }
+
+  timedisplayed = false;
+  
 
 }
