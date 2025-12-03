@@ -1,9 +1,13 @@
 //Alec Zheng, Isaiah Marzan
 
-#include <LiquidCrystal.h>
-#include <Stepper.h>
 #include <Wire.h>
+//LiquidCrystal by Arduino, Adafruit
+#include <LiquidCrystal.h>
+//Stepper by Arduino
+#include <Stepper.h>
+//RTClib bu Adafruit
 #include <RTClib.h>
+//DHT sensor library by Adafruit
 #include "DHT.h"
 
 #define RDA 0x80
@@ -11,19 +15,25 @@
 
 //TEMP SETUP  
 DHT dht(53, DHT11);
+float temp;
+float hum;
 
 //RTC SETUP
 RTC_DS1307 rtc;
 bool timedisplayed = true;
+unsigned long readtime;
 
 //BUTTON STUFF
+unsigned char* pin_l = (unsigned char*) 0x109;
+unsigned char* ddr_l = (unsigned char*) 0x10A;
+unsigned char* port_l = (unsigned char*) 0x10B;
 unsigned char* ddr_e = (unsigned char*) 0x2D;
 unsigned char* port_e = (unsigned char*) 0x2E;
 unsigned char* ddr_h = (unsigned char*) 0x101;
 unsigned char* port_h = (unsigned char*) 0x102;
 volatile unsigned char* pin_b = (unsigned char*) 0x23;
 volatile int state = 0;
-//state 0 = disabled, state 1 = idle, state 2 = running, state 3 = error
+//state 0 = disabled, state 1 = idle, state 2 = error, state 3 = running
 
 //UART STUFF
 volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
@@ -38,6 +48,12 @@ volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 int level = 0;
+
+//MOTOR STUFF
+unsigned char* pin_c = (unsigned char*) 0x26;
+unsigned char* ddr_c = (unsigned char*) 0x27;
+unsigned char* port_c = (unsigned char*) 0x28;
+
 
 //DELAY STUFF
 volatile unsigned char *myTCCR1A = (unsigned char *) 0x80;
@@ -84,7 +100,20 @@ void setup() {
     Serial.println("Couldn't find RTC");
   }
   rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  temp = dht.readTemperature(true);
+  hum = dht.readHumidity();
+  //get when you first read the sensors
+  readtime = millis();
 
+  //MOTOR SETUP
+  //set up control pins
+  // *ddr_c |= 0x04;
+  // *ddr_c |= 0x01;
+  // *ddr_c |= 0x02;
+  pinMode(33, OUTPUT);
+  pinMode(35, OUTPUT);
+  pinMode(37, OUTPUT);
+  analogWrite(37, 255);
 }
 
 void loop() {
@@ -96,6 +125,24 @@ void loop() {
     U0putchar('\n');
     timedisplayed = true;
   }
+
+  //only update temp and hum if 1 min has elapsed since last read.
+  if((millis()-readtime) > 60000){
+    temp = dht.readTemperature(true);
+    hum = dht.readHumidity();
+  }
+  
+  //
+  if(state != 0){
+    //display temp and hum
+    lcd.setCursor(3, 1);
+    lcd.print(temp);
+    lcd.setCursor(11, 1);
+    lcd.print(hum);
+    readtime = millis();
+  }
+
+  
     
   //state = disabled
   if(state == 0){
@@ -113,19 +160,18 @@ void loop() {
   else if(state == 1){
     
     *port_h &= 0xF7;  //blue off
-    *port_h &= 0xEF;  //red off
+    *port_h &= 0xBF;  //red off
     *port_h &= 0xDF;  //yellow off
-    *port_h |= 0x40;  //Green light on
-
-    //get when you first read the sensors
-    unsigned long starttime = millis();
+    *port_h |= 0x10;  //Green light on
 
 
     //LCD DISPLAY
     lcd.display();
-    lcd.setCursor(0, 0); // move cursor to (0, 0)
+    lcd.setCursor(0, 0);
     lcd.print("WT:");
-    lcd.setCursor(0, 1); // move cursor to (0, 0)
+    lcd.setCursor(3, 0);
+    lcd.print("         ");
+    lcd.setCursor(0, 1);
     lcd.print("TP:");
     lcd.setCursor(8, 1);
     lcd.print("HM:");
@@ -133,29 +179,16 @@ void loop() {
     //water level
     level = adc_read(0);
     if(level < 20){
-      lcd.setCursor(3, 0); // move cursor to (0, 0)
-      lcd.print("LOW WATER");
+      state = 2;
     }
     else{
       lcd.setCursor(3, 0); // move cursor to (0, 0)
       lcd.print(level);
+      if(temp > 60.0){
+        state = 3;
+      }
     }
-    //temp
-    float temp = dht.readTemperature(true);
-    float hum = dht.readHumidity();
-    lcd.setCursor(3, 1);
-    lcd.print(temp);
-    lcd.setCursor(11, 1);
-    lcd.print(hum);
-    
 
-    //current time
-    unsigned long currenttime = millis();
-
-    //wait until 1 minute has passed between now and start
-    while((currenttime-starttime) < 60000 && state == 1){
-      currenttime = millis();
-    }
 
   }
   //State = Error
@@ -163,12 +196,18 @@ void loop() {
     
     *port_h &= 0xF7;  //blue off
     *port_h &= 0xDF;  //yellow off
-    *port_h &= 0xBF;  //green off
-    *port_h |= 0x10;  //red on
+    *port_h &= 0xEF;  //green off
+    *port_h |= 0x40;  //red on
 
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Error");
+    lcd.setCursor(3, 0);
+    lcd.print("Water Low");
+
+    //reset button check
+    if (*pin_l & 0x40) {
+      my_delay(1);
+      state = 1;
+    }
+    
     
   }
   //State = Running
@@ -178,8 +217,27 @@ void loop() {
     *port_h &= 0xDF;  //yellow off
     *port_h &= 0xEF;  //red off
     *port_h |= 0x08;  //blue on
+    
+    //35=dir2 ,37=speed, 33=dir1
+    // *port_c &= 0xF7;
+    // *port_c |= 0x02;
+    digitalWrite(33, LOW);
+    digitalWrite(35, HIGH);
+    if (temp < 60)
+      state = 1;
+    if(level < 20){
+      state = 2;
+    }
+    
+    
 
+  }
 
+  if(state != 3){
+    // *port_c &= 0xF7;
+    // *port_c &= 0xFD;
+    digitalWrite(33, LOW);
+    digitalWrite(35, LOW);
   }
 
 }
@@ -327,15 +385,15 @@ void startButton()
     state = 0;
     U0putString("Idle to Disabled: ");
   }
-  else if(state == 2){ //running
+  else if(state == 2){ //error
     my_delay(1);
     state = 0;
-    U0putString("Running to Idle: ");
+    U0putString("Error to Disabled: ");
   }
-  else if(state == 3){ //error
+  else if(state == 3){ //running
     my_delay(1);
-    state = 1;
-    U0putString("Error to Idle: ");
+    state = 0;
+    U0putString("Running to Disabled: ");
     
   }
 
