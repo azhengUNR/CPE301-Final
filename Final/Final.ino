@@ -118,10 +118,6 @@
     }
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
-    //temp and hum stuff
-    temp = dht.readTemperature(true);
-    hum = dht.readHumidity();
-
     //MOTOR SETUP
     //set up control pins
     *ddr_j |= 0x02; //14
@@ -147,8 +143,9 @@
     }
 
 
-      temp = dht.readTemperature(true);
-      hum = dht.readHumidity();
+    temp = dht.readTemperature(true);
+    hum = dht.readHumidity();
+    level = adc_read(0);
 
 
 
@@ -160,6 +157,8 @@
       lcd.print(temp);
       lcd.setCursor(11, 1);
       lcd.print(hum);
+      lcd.setCursor(3, 0);
+      lcd.print(level);
       displaytime = millis();
       
     }
@@ -223,8 +222,6 @@
       lcd.display();
       lcd.setCursor(0, 0);
       lcd.print("WT:");
-      lcd.setCursor(3, 0);
-      lcd.print("         ");
       lcd.setCursor(0, 1);
       lcd.print("TP:");
       lcd.setCursor(8, 1);
@@ -235,14 +232,14 @@
         lcd.print(temp);
         lcd.setCursor(11, 1);
         lcd.print(hum);
+        lcd.setCursor(3, 0);
+        lcd.print(level);
         displaytime = millis();
       }
 
 
-      //water level
-      level = adc_read(0);
-      lcd.setCursor(3, 0);
-      lcd.print(level);
+      
+      
       if(level < 20){
         state = 2;
         timedisplayed = false;
@@ -280,9 +277,14 @@
 
       //reset button check
       if (*pin_l & 0x40) {
+        lcd.setCursor(3, 0);
+        lcd.print("          ");
         my_delay(1);
         state = 1;
         timedisplayed = false;
+        level = adc_read(0);
+        lcd.setCursor(3, 0);
+        lcd.print(level);
       }
       
       //stop button check
@@ -312,9 +314,8 @@
         fanOn = true;
       }
       
-      level = adc_read(0);
-      lcd.setCursor(3, 0);
-      lcd.print(level);
+      
+      
       
       if (temp < 78){
         state = 1;
@@ -343,10 +344,11 @@
   // INPUT OUTPUT
   void U0Init(int U0baud)
   {
-    
+    //write this method. Check previous lab codes
     unsigned long FCPU = 16000000;
     unsigned int tbaud;
     tbaud = (FCPU / 16 / U0baud - 1);
+    // Same as (FCPU / (16 * U0baud)) - 1;
     *myUCSR0A = 0x20;
     *myUCSR0B = 0x18;
     *myUCSR0C = 0x06;
