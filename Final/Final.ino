@@ -17,11 +17,12 @@
   DHT dht(53, DHT11);
   float temp;
   float hum;
+  bool displaystart = false;
 
   //RTC SETUP
   RTC_DS1307 rtc;
   bool timedisplayed = true;
-  unsigned long readtime;
+  unsigned long displaytime = 1000000000000;
 
   //BUTTON STUFF
   unsigned char* pin_l = (unsigned char*) 0x109;
@@ -72,7 +73,9 @@
 
   //STEPPER STUFF
   const int stepsPerRevolution = 2038;
-  Stepper myStepper = Stepper(stepsPerRevolution, 23, 25, 27, 29);
+  //In1 -> In3 -> In2 -> In4
+  Stepper myStepper = Stepper(stepsPerRevolution, 23, 27, 25, 29);
+  bool stepped = false;
 
   //DISPLAY CHARACTERS
   const int RS = 11, EN = 12, D4 = 52, D5 = 48, D6 = 50, D7 = 46;
@@ -87,6 +90,12 @@
     //BUTTON STUFF
     *ddr_e &= 0xEF;   //set PB4 to INPUT
     *port_e |= 0x10;  //INPUT pull up
+    *ddr_l &= 0xFE;   //PL0 INPUT
+    *port_l |= 0x01;  //Pull up
+    *ddr_l &= 0xEF;   //PL5 INPUT
+    *port_l |= 0x10;  //Pull up
+    *ddr_l &= 0xBF;   //PL6 INPUT
+    *port_l |= 0x40;  //Pull up
     attachInterrupt(digitalPinToInterrupt(2), startButton, FALLING);
     //LED STUFF
     *ddr_h |= 0x08;   //blue
@@ -105,15 +114,13 @@
 
     //Real Time Clock Stuff
     if (!rtc.begin()) {
-      Serial.println("Couldn't find RTC");
+      U0putString("Couldn't find RTC\n");
     }
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
     //temp and hum stuff
     temp = dht.readTemperature(true);
     hum = dht.readHumidity();
-    //get when you first read the sensors
-    readtime = millis();
 
     //MOTOR SETUP
     //set up control pins
@@ -130,44 +137,52 @@
     if(state != 3){
       *port_j &= 0xFD;  
       *port_j &= 0xFE;
-      //analogWrite(16, 0);
       fanOn = false;
     }
 
-    if(timedisplayed == false){
+    if(!timedisplayed){
       my_delay(1);
       DateTime now = rtc.now();
       printTime(now);
-      U0putchar('\n');
-      timedisplayed = true;
     }
 
-    //only update temp and hum if 1 min has elapsed since last read.
-    //if((millis()-readtime) > 60000){
+
       temp = dht.readTemperature(true);
       hum = dht.readHumidity();
-    //}
 
-    Serial.println(temp);
-    Serial.println(level);
+
+
     
     //Print temp and humidity only when state is not 0
-    if(state != 0 && millis()-readtime > 60000){
-    //   //display temp and hum
-    lcd.setCursor(3, 1);
-    lcd.print(temp);
-    //   lcd.setCursor(11, 1);
-    //   lcd.print(hum);
-    //   readtime = millis();
-      lcd.display();
-      lcd.setCursor(0, 0);
-      lcd.print("WT:");
-      lcd.setCursor(3, 0);
-      lcd.print("         ");
-      lcd.setCursor(0, 1);
-      lcd.print("TP:");
-      lcd.setCursor(8, 1);
-      lcd.print("HM:");
+    if(state != 0 && millis()-displaytime > 60000){
+      //display temp and hum
+      lcd.setCursor(3, 1);
+      lcd.print(temp);
+      lcd.setCursor(11, 1);
+      lcd.print(hum);
+      displaytime = millis();
+      
+    }
+
+    //stepper motor
+    if(*pin_l & 0x01 && state != 0){
+      my_delay(1);
+      if(!stepped){
+        myStepper.setSpeed(10);
+        myStepper.step(500);
+        stepped = true;
+      }
+      else{
+        myStepper.setSpeed(10);
+        myStepper.step(-500);
+        stepped = false;
+      }
+        U0putString("Stepped at: ");
+        DateTime now = rtc.now();
+        printTime(now);
+        U0putchar('\n');
+        
+
     }
 
     
@@ -175,11 +190,17 @@
     //state = disabled
     if(state == 0){
       
+      if(!timedisplayed){
+        U0putString(" State = Disabled\n");
+        timedisplayed = true;
+      }
       *port_h &= 0xF7;  //blue off
       *port_h &= 0xBF;  //green off
       *port_h &= 0xEF;  //red off
       *port_h |= 0x20;  //Yellow light on
       lcd.clear();
+      displaystart = false;
+      
 
       
       
@@ -187,6 +208,11 @@
     //State = idle
     else if(state == 1){
       
+      if(!timedisplayed){
+        U0putString(" State = Idle\n");
+        timedisplayed = true;
+      }
+    
       *port_h &= 0xF7;  //blue off
       *port_h &= 0xBF;  //red off
       *port_h &= 0xDF;  //yellow off
@@ -203,21 +229,36 @@
       lcd.print("TP:");
       lcd.setCursor(8, 1);
       lcd.print("HM:");
+      if(!displaystart){
+        displaystart = true;
+        lcd.setCursor(3, 1);
+        lcd.print(temp);
+        lcd.setCursor(11, 1);
+        lcd.print(hum);
+        displaytime = millis();
+      }
 
 
       //water level
       level = adc_read(0);
+      lcd.setCursor(3, 0);
+      lcd.print(level);
       if(level < 20){
         state = 2;
+        timedisplayed = false;
       }
-      else{
-        // lcd.setCursor(3, 0);
-        // lcd.print(level);
-        if(temp > 78){
-          lcd.setCursor(3, 1);
-          lcd.print(temp);
-          state = 3;
-        }
+      else if(temp > 78){
+        lcd.setCursor(3, 1);
+        lcd.print(temp);
+        state = 3;
+        timedisplayed = false;
+      }
+
+      //stop button check
+      if (*pin_l & 0x10) {
+        my_delay(1);
+        state = 0;
+        timedisplayed = false;
       }
 
 
@@ -225,6 +266,10 @@
     //State = Error
     else if(state == 2){
       
+      if(!timedisplayed){
+        U0putString(" State = Error\n");
+        timedisplayed = true;
+      }
       *port_h &= 0xF7;  //blue off
       *port_h &= 0xDF;  //yellow off
       *port_h &= 0xEF;  //green off
@@ -237,13 +282,24 @@
       if (*pin_l & 0x40) {
         my_delay(1);
         state = 1;
+        timedisplayed = false;
       }
       
+      //stop button check
+      if (*pin_l & 0x10) {
+        my_delay(1);
+        state = 0;
+        timedisplayed = false;
+      }
       
     }
     //State = Running
     else if(state == 3){
       
+      if(!timedisplayed){
+        U0putString(" State = Running\n");
+        timedisplayed = true;
+      }
       *port_h &= 0xBF;  //green off
       *port_h &= 0xDF;  //yellow off
       *port_h &= 0xEF;  //red off
@@ -253,26 +309,28 @@
       if(fanOn == false){
         *port_j &= 0xFD;  //clear 14 dir1
         *port_j |= 0x01;  //set 15 dir2
-        Serial.println("fancheck");
         fanOn = true;
       }
       
       level = adc_read(0);
       lcd.setCursor(3, 0);
       lcd.print(level);
-      temp = dht.readTemperature(true);
       
-      Serial.println(temp);
       if (temp < 78){
         state = 1;
-        Serial.println("Temp");
+        timedisplayed = false;
       }
       if(level < 20){
         state = 2;
-        Serial.println("Level");
+        timedisplayed = false;
       }
         
-
+      //stop button check
+      if (*pin_l & 0x10) {
+        my_delay(1);
+        state = 0;
+        timedisplayed = false;
+      }
       
       
 
@@ -285,11 +343,10 @@
   // INPUT OUTPUT
   void U0Init(int U0baud)
   {
-    //write this method. Check previous lab codes
+    
     unsigned long FCPU = 16000000;
     unsigned int tbaud;
     tbaud = (FCPU / 16 / U0baud - 1);
-    // Same as (FCPU / (16 * U0baud)) - 1;
     *myUCSR0A = 0x20;
     *myUCSR0B = 0x18;
     *myUCSR0C = 0x06;
@@ -416,27 +473,9 @@
   void startButton()
   {
     if(state == 0){ //disabled
-      //my_delay(1);
+      my_delay(1);
       state = 1;
-      //U0putString("Disabled to Idle: ");
+      timedisplayed = false;
     }
-    // else if(state == 1){ //idle
-    //   //my_delay(1);
-    //   state = 0;
-    //   //U0putString("Idle to Disabled: ");
-    // }
-    // else if(state == 2){ //error
-    //   //my_delay(1);
-    //   state = 0;
-    //   //U0putString("Error to Disabled: ");
-    // }
-    // else if(state == 3){ //running
-    //   //my_delay(1);
-    //   state = 0;
-    //   //U0putString("Running to Disabled: ");
-    // }
-
-    timedisplayed = false;
-    
 
   }
